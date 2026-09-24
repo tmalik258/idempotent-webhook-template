@@ -1,0 +1,140 @@
+{
+  "name": "Idempotent Webhook Handler Template",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhook-idempotent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Adjust this to match your provider's actual event ID field.\n// Stripe: $json.body.id | GitHub: $json.headers['x-github-delivery']\n// Shopify: $json.headers['x-shopify-webhook-id']\nconst eventId = $json.body.id;\n\nif (!eventId) {\n  throw new Error('Missing event id in webhook payload');\n}\n\nreturn [{ json: { ...$json.body, event_id: eventId } }];"
+      },
+      "name": "Extract Event ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "processed_events",
+        "returnAll": false,
+        "where": {
+          "values": [
+            {
+              "column": "event_id",
+              "value": "={{$json.event_id}}"
+            }
+          ]
+        }
+      },
+      "name": "Check If Already Processed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [680, 300],
+      "notes": "Swap for your actual DB node (Postgres/MySQL/Airtable/etc). The table just needs one column: event_id (unique/primary key)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "1",
+              "leftValue": "={{$json.length}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "Is New Event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "processed_events",
+        "columns": "event_id",
+        "additionalFields": {}
+      },
+      "name": "Mark As Processed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1120, 200],
+      "notes": "This insert should have a UNIQUE constraint on event_id at the DB level, that's what actually closes the race condition if two duplicates arrive at nearly the same time."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Your actual business logic goes here.\n// This only runs once per real event.\nreturn [{ json: { status: 'processed', event_id: $json.event_id } }];"
+      },
+      "name": "Process Event (Your Logic Here)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'processed' } }}"
+      },
+      "name": "Respond - Processed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'already processed' } }}"
+      },
+      "name": "Respond - Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 420]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Extract Event ID", "type": "main", "index": 0 }]]
+    },
+    "Extract Event ID": {
+      "main": [[{ "node": "Check If Already Processed", "type": "main", "index": 0 }]]
+    },
+    "Check If Already Processed": {
+      "main": [[{ "node": "Is New Event?", "type": "main", "index": 0 }]]
+    },
+    "Is New Event?": {
+      "main": [
+        [{ "node": "Mark As Processed", "type": "main", "index": 0 }],
+        [{ "node": "Respond - Duplicate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Mark As Processed": {
+      "main": [[{ "node": "Process Event (Your Logic Here)", "type": "main", "index": 0 }]]
+    },
+    "Process Event (Your Logic Here)": {
+      "main": [[{ "node": "Respond - Processed", "type": "main", "index": 0 }]]
+    }
+  }
+}
